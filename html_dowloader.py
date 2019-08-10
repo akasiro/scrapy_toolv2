@@ -115,6 +115,7 @@ class html_downloader():
                 response = request(**send_kwargs)
                 if response.status_code == 200:
                     self.ip_buffer.add(temp_ip)
+                    response.close()
                     break
                 else:
                     self.ip_error.update({temp_ip:time_now})
@@ -138,8 +139,10 @@ if __name__ == "__main__":
            'https://www.indiegogo.com/campaign_collections/staff-picks']
     t = time.time()
     for i in url:
+        print('*'*100)
         res = hd.request_proxy(i)
         print(res.status_code)
+        print(res.text)
         t2 = time.time()
         print(t2)
         print('time:  {}'.format(t2-t))
