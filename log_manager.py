@@ -93,7 +93,7 @@ class log_manager():
         with open(self.logging_file, 'r') as f:
             logging_content = f.read()
         logging_content = logging_content.replace(';',os.linesep)
-        df = pd.read_table(StringIO(logging_content), sep=',')
+        df = pd.read_table(StringIO(logging_content), sep=',',error_bad_lines=False)
         if kwargs:
             for k in kwargs.keys():
                 try:

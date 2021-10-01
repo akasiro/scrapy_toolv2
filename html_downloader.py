@@ -13,7 +13,7 @@ DEFAULT_MAX_READ_TIME = 30
 
 # settings for proxypool
 # 默认七夜代理获取地址
-QIYE_URL = 'http://localhost:8000'
+QIYE_URL = 'http://localhost:9090'
 
 # 默认西刺代理地址
 XICI_URL = 'http://www.xicidaili.com/wn/'
@@ -120,12 +120,12 @@ class html_downloader():
                       max_iter_time = DEFAULT_MAX_ITER_TIME,
                       data=None, cookies=None, files=None,
                     auth=None, allow_redirects=True,
-                    hooks=None, stream=None, verify=None, cert=None, json=None):
+                    hooks=None, stream=None, verify=None, cert=None, json=None, headers=None, proxies=None):
         send_kwargs = {
             'url': url, 'method': method, 'data': data,
             'cookies': cookies, 'files': files, 'auth': auth, 'timeout': timeout,
             'allow_redirects': allow_redirects, 'hooks': hooks, 'stream': stream,
-            'verify': verify, 'cert': cert, 'json': json}
+            'verify': verify, 'cert': cert, 'json': json, 'headers':headers, 'proxies':proxies}
 
         response = None
         iter_time = 0
@@ -133,7 +133,8 @@ class html_downloader():
         while iter_time < max_iter_time and self.ip_pool_refresh_time <2:
             (time_now, temp_ip) = self.pick_ip()
             send_kwargs['proxies'] = self.ip2proxies(temp_ip)
-            send_kwargs['headers'] = self.pick_headers()
+            if not send_kwargs['headers']:
+                send_kwargs['headers'] = self.pick_headers()
             try:
                 response = request(**send_kwargs)
                 if response.status_code == 200:
@@ -170,4 +171,5 @@ if __name__ == "__main__":
         print(t2)
         print('time:  {}'.format(t2-t))
         t = t2
+    input()
 
