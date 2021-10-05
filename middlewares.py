@@ -1,16 +1,19 @@
-import scrapy
 import time
+import redis
 import os
 import pickle
 import requests
+from requests.exceptions import ConnectionError
+from urllib3.exceptions import NewConnectionError, MaxRetryError
 import random
 from scrapy import exceptions
-from scrapy import signals
-from scrapy.downloadermiddlewares.downloadtimeout import DownloadTimeoutMiddleware
+
 # for server
 # ipPoolUrl = 'http://localhost:8000'
 # for local
 ipPoolUrl = 'http://123.57.88.26:8000'
+# serveraddress
+serverAddress = '123.57.88.26'
 # IP池超时时间
 lifetimeIpPool = 600
 # 请求超时时间
@@ -68,7 +71,7 @@ class MyProxyMiddleWare():
     3. 使用ip进行访问，如果response为200则停止其他中间件，返回response，否则使用其他ip
 
 
-
+    > 使用说明
     使用时需要在setting.py中的DOWNLOADER_MIDDLEWARES添加
     'scrapy.downloadermiddlewares.downloadtimeout.DownloadTimeoutMiddleware': None,
     'MYscrapy.middlewares.MyProxyMiddleWare':749
@@ -87,7 +90,7 @@ class MyProxyMiddleWare():
             request.meta['proxy'] = ip
             request.meta['timeout'] = requestTimeout
 
-    def proess_response(self, request, response, spider):
+    def process_response(self, request, response, spider):
         
         if response.status != 200 and len(self.ipPool['ipPool']) != 0:
             proxy = self.getRandomProxy()
@@ -96,15 +99,28 @@ class MyProxyMiddleWare():
             return request
         return response
 
+    def process_spider_exception(self, response, exception, spider):
+        # Called when a spider or process_spider_input() method
+        # (from other spider middleware) raises an exception.
+
+        # Should return either None or an iterable of Request or item objects.
+        pass
+
     def getIpPool(self):
         ipPoolPath = 'ipPool.pkl'
         if os.path.exists(ipPoolPath):
             with open(ipPoolPath,'rb') as ipf:
-                ipPool = pickle.loads(ipf.read())
-            if time.time() - ipPool['timestamp'] > lifetimeIpPool or len(ipPool['ipPool']) == 0:
-                self.ipPool = self.requestIpPool()
-            else:
-                self.ipPool = ipPool
+                try: 
+                    ipPool = pickle.loads(ipf.read())
+                except (EOFError):
+                    print('ip缓存损坏')
+                    self.ipPool = self.requestIpPool()
+                else:
+                    if (time.time() - ipPool['timestamp'] > lifetimeIpPool 
+                        or len(ipPool['ipPool']) == 0):
+                        self.ipPool = self.requestIpPool()
+                    else:
+                        self.ipPool = ipPool
         else:
             self.ipPool = self.requestIpPool()
     
@@ -112,13 +128,22 @@ class MyProxyMiddleWare():
         ipPool = {'timestamp':None,'ipPool':None}
         try:
             res = requests.get(ipPoolUrl,headers=DEFAULT_HEADER)
-            ipPool['timestamp'] = time.time()
-            ipPool['ipPool'] = ['http://{}:{}'.format(i[0],i[1]) for i in eval(res.content)]
-            with open('ipPool.pkl','wb') as f:
-                pickle.dump(ipPool,f)
-            print('ipPool refresh')
+        except (ConnectionError,ConnectionRefusedError,NewConnectionError, MaxRetryError) as e:
+            print('远程ip池未打开')
+            raise e
         except:
-            print('no ipPool')
+            print('ip池未知异常')
+            raise
+        else:
+            ipPool['timestamp'] = time.time()
+            ipPool['ipPool'] = sorted(['http://{}:{}'.format(i[0],i[1]) for i in eval(res.content)]+
+                                    ['https://{}:{}'.format(i[0],i[1]) for i in eval(res.content)])
+            if len(ipPool['ipPool']):
+                with open('ipPool.pkl','wb') as f:
+                    pickle.dump(ipPool,f)
+                print('ipPool refresh')
+            else:
+                raise
         return ipPool
     
     def getRandomProxy(self):
@@ -127,6 +152,7 @@ class MyProxyMiddleWare():
             
 class MyUserAgentMiddleware():
     '''
+    > 使用说明
     使用时需要在setting.py中的DOWNLOADER_MIDDLEWARES添加
     'scrapy.downloadermiddleware.useragent.UserAgentMiddleware': None,
     'MYscrapy.middlewares.MyUserAgentMiddleware':500,
@@ -138,4 +164,87 @@ class MyUserAgentMiddleware():
         agent = random.choice(self.user_agent)
         request.headers['User-Agent'] = agent
 
+class proxyMiddleWareRedis():
+    '''
+    使用Redis作为IP池缓存的proxymiddleware
 
+    > 使用说明
+    使用时需要在setting.py中的DOWNLOADER_MIDDLEWARES添加
+    'scrapy.downloadermiddlewares.downloadtimeout.DownloadTimeoutMiddleware': None,
+    'MYscrapy.middlewares.proxyMiddleWareRedis':749
+
+    在setting.py中添加RETRY_TIMES =100
+    '''
+    conn_pool = redis.ConnectionPool(host=serverAddress, port=6379, password='')
+    def __init__(self) -> None:
+        self.getIpPoolRedis()
+
+    def process_request(self, request, spider):
+        try:
+            ip = self.getRandomProxy()
+            if ip is None:
+                raise exceptions.IgnoreRequest
+        except:
+            raise exceptions.IgnoreRequest
+        else:
+            print("ip:{}".format(ip))
+            request.meta['proxy'] = ip
+            request.meta['timeout'] = requestTimeout
+
+    def process_response(self, request, response, spider):
+        if response.status != 200:
+            print('换个ip试试')
+            ip = self.getRandomProxy()
+            if ip is None:
+                raise exceptions.IgnoreRequest
+            request.meta['proxy'] = ip
+            request.meta['timeout'] = requestTimeout
+            return request
+        else:
+            c = self.get_conn()
+            c.lpush('ipPool',request.meta['proxy'])
+            return response
+
+    def getIpPoolRedis(self):
+        try:
+            c = self.get_conn()
+            tmpIp = c.lpop('ipPool')
+        except:
+            raise
+        else:
+            if tmpIp is None:
+                self.requestIpPoolRedis()
+            else:
+                c.lpush('ipPool',tmpIp)
+
+    def requestIpPoolRedis(self):
+        try:
+            res = requests.get(ipPoolUrl,headers=DEFAULT_HEADER)
+        except (ConnectionError,ConnectionRefusedError,NewConnectionError, MaxRetryError) as e:
+            print('远程ip池未打开')
+        except:
+            print('ip池未知异常')
+        else:
+            iplist = eval(res.content)
+            if len(iplist):
+                try:
+                    c = self.get_conn()
+                    for i in iplist:
+                        c.lpush('ipPool','http://{}:{}'.format(i[0],i[1]),'https://{}:{}'.format(i[0],i[1]))
+                    c.expire('ipPool',lifetimeIpPool)
+                except:
+                    print('redis error')
+                    raise
+                print('ipPool redis refresh')
+            else:
+                print('no ip in pool')
+                raise
+
+    def getRandomProxy(self):
+        c = self.get_conn()
+        return c.lpop('ipPool').decode()
+    
+    @classmethod
+    def get_conn(cls):
+        return redis.Redis(connection_pool=cls.conn_pool)
+    
